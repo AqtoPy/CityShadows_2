@@ -1,190 +1,146 @@
 extends VehicleBody3D
 
-class_name PlayerVehicle
+class_name Car
 
 # Настройки движения
 @export var max_speed = 20.0
-@export var acceleration = 5.0
-@export var steering_speed = 2.0
-@export var brake_force = 4.0
+@export var acceleration = 300.0
+@export var steering_speed = 0.8
+@export var brake_force = 5.0
 
-# Настройки камеры
-@export var camera_distance = 5.0
-@export var camera_height = 2.0
+# Настройки камер
+@export var third_person_offset = Vector3(0, 2.5, -5)
 @export var camera_sensitivity = 0.005
-@export var orbit_camera_distance = 3.0
 
-# Состояния камеры
+# Состояния
 enum CameraMode { FIRST_PERSON, THIRD_PERSON, ORBIT }
 var current_camera_mode = CameraMode.THIRD_PERSON
+var is_player_inside = false
 var orbit_angle = 0.0
-var orbit_vertical_angle = 0.0
 
-# Управление
-var is_player_controlling = false
-var current_driver = null
-
-# Узлы камеры
+# Узлы
 @onready var camera_pivot = $CameraPivot
-@onready var first_person_camera = $CameraPivot/FirstPersonCamera
-@onready var third_person_camera = $CameraPivot/ThirdPersonCamera
-@onready var orbit_camera = $CameraPivot/OrbitCamera
+@onready var interaction_area = $InteractionArea
 @onready var exit_position = $ExitPosition
 
-func _ready():
-    # Инициализация камер
-    if not first_person_camera:
-        first_person_camera = Camera3D.new()
-        first_person_camera.name = "FirstPersonCamera"
-        camera_pivot.add_child(first_person_camera)
-    
-    if not third_person_camera:
-        third_person_camera = Camera3D.new()
-        third_person_camera.name = "ThirdPersonCamera"
-        camera_pivot.add_child(third_person_camera)
-    
-    if not orbit_camera:
-        orbit_camera = Camera3D.new()
-        orbit_camera.name = "OrbitCamera"
-        camera_pivot.add_child(orbit_camera)
-    
-    # Начальная настройка камер
-    setup_cameras()
-    update_camera_mode()
+var player_ref = null
 
-func setup_cameras():
-    # Позиция камеры от первого лица (в салоне)
-    first_person_camera.position = Vector3(0, 0.5, 0.3)
-    first_person_camera.fov = 75
+func _ready():
+    # Настройка взаимодействия
+    interaction_area.body_entered.connect(_on_body_entered)
+    interaction_area.body_exited.connect(_on_body_exited)
     
-    # Позиция камеры от третьего лица (сзади)
-    third_person_camera.position = Vector3(0, 1.5, -camera_distance)
-    third_person_camera.look_at(position)
-    
-    # Позиция орбитальной камеры
-    orbit_camera.position = Vector3(0, 0, 0)
-    orbit_camera.fov = 85
+    # Отключить управление при старте
+    set_process_input(false)
+    engine_force = 0
+    brake = 0
+    steering = 0
 
 func _physics_process(delta):
-    if is_player_controlling:
-        handle_vehicle_input(delta)
-        handle_camera_behavior(delta)
+    if is_player_inside:
+        handle_movement(delta)
 
 func _input(event):
-    if is_player_controlling:
+    if is_player_inside:
+        handle_camera_input(event)
+        
         if event.is_action_pressed("change_camera"):
             cycle_camera_mode()
-        
-        if event is InputEventMouseMotion:
-            handle_camera_rotation(event)
+            
+        if event.is_action_pressed("exit_vehicle"):
+            exit_vehicle()
 
-func handle_vehicle_input(delta):
-    # Управление движением
-    var steer_input = Input.get_axis("steer_right", "steer_left")
-    var accel_input = Input.get_axis("brake", "accelerate")
+func handle_movement(delta):
+    var accelerate = Input.get_action_strength("accelerate")
+    var brake = Input.get_action_strength("brake")
+    var steer = Input.get_axis("steer_right", "steer_left")
     
-    steering = move_toward(steering, steer_input * 0.4, delta * steering_speed)
-    engine_force = accel_input * acceleration * 100.0
+    # Управление двигателем и тормозом
+    self.engine_force = accelerate * acceleration
+    self.brake = brake * brake_force
     
-    # Ручной тормоз
-    brake = brake_force if Input.is_action_pressed("handbrake") else 0.0
+    # Управление рулем
+    steering = move_toward(steering, steer * 0.4, delta * steering_speed)
     
     # Ограничение скорости
     if linear_velocity.length() > max_speed:
         linear_velocity = linear_velocity.normalized() * max_speed
 
-func handle_camera_behavior(delta):
-    # Плавное перемещение камеры третьего лица
-    if current_camera_mode == CameraMode.THIRD_PERSON:
-        var target_pos = Vector3(0, camera_height, -camera_distance)
-        camera_pivot.position = camera_pivot.position.lerp(target_pos, delta * 5.0)
-
-func handle_camera_rotation(event: InputEventMouseMotion):
-    match current_camera_mode:
-        CameraMode.FIRST_PERSON:
-            # Вращение от первого лица
-            rotate_y(-event.relative.x * camera_sensitivity)
-            first_person_camera.rotate_x(-event.relative.y * camera_sensitivity)
-            first_person_camera.rotation.x = clamp(
-                first_person_camera.rotation.x,
-                deg_to_rad(-70),  # Макс. угол вверх
-                deg_to_rad(70)    # Макс. угол вниз
-            )
-        
-        CameraMode.ORBIT:
-            # Вращение вокруг машины
-            orbit_angle += event.relative.x * camera_sensitivity
-            orbit_vertical_angle = clamp(
-                orbit_vertical_angle - event.relative.y * camera_sensitivity,
-                deg_to_rad(-30),  # Макс. угол вверх
-                deg_to_rad(30)    # Макс. угол вниз
-            )
+func handle_camera_input(event):
+    if event is InputEventMouseMotion:
+        match current_camera_mode:
+            CameraMode.FIRST_PERSON:
+                rotate_y(-event.relative.x * camera_sensitivity)
+                $CameraPivot/FirstPersonCamera.rotate_x(-event.relative.y * camera_sensitivity)
+                $CameraPivot/FirstPersonCamera.rotation.x = clamp(
+                    $CameraPivot/FirstPersonCamera.rotation.x, 
+                    deg_to_rad(-70), 
+                    deg_to_rad(70)
+                )
             
-            # Вычисляем позицию камеры
-            var offset = Vector3(
-                sin(orbit_angle) * orbit_camera_distance,
-                orbit_vertical_angle * 2.0 + 1.5,
-                cos(orbit_angle) * orbit_camera_distance
-            )
-            
-            orbit_camera.transform.origin = offset
-            orbit_camera.look_at(Vector3.ZERO)
+            CameraMode.ORBIT:
+                orbit_angle += event.relative.x * camera_sensitivity
+                camera_pivot.rotation.y = orbit_angle
 
 func cycle_camera_mode():
     current_camera_mode = (current_camera_mode + 1) % 3
-    update_camera_mode()
+    update_camera()
 
-func update_camera_mode():
-    # Отключаем все камеры
-    for camera in [first_person_camera, third_person_camera, orbit_camera]:
-        camera.clear_current()
+func update_camera():
+    for camera in camera_pivot.get_children():
+        if camera is Camera3D:
+            camera.clear_current()
     
-    # Включаем нужную камеру
     match current_camera_mode:
         CameraMode.FIRST_PERSON:
-            first_person_camera.make_current()
+            $CameraPivot/FirstPersonCamera.make_current()
+        
         CameraMode.THIRD_PERSON:
-            third_person_camera.make_current()
+            $CameraPivot/ThirdPersonCamera.make_current()
+            camera_pivot.position = third_person_offset
+        
         CameraMode.ORBIT:
-            orbit_camera.make_current()
+            $CameraPivot/OrbitCamera.make_current()
+            camera_pivot.position = Vector3.ZERO
 
 func enter_vehicle(player):
-    if is_player_controlling:
-        return false
+    if is_player_inside: return
     
-    current_driver = player
-    is_player_controlling = true
+    player_ref = player
+    is_player_inside = true
     
-    # Отключаем управление игроком
+    # Отключить управление игроком
     player.set_process_input(false)
     player.get_node("Camera").clear_current()
     
-    # Включаем управление машиной
+    # Включить управление машиной
     set_process_input(true)
-    update_camera_mode()
-    
-    return true
+    Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+    update_camera()
 
 func exit_vehicle():
-    if not is_player_controlling:
-        return
+    if !is_player_inside: return
     
-    # Возвращаем управление игроку
-    current_driver.set_process_input(true)
-    current_driver.get_node("Camera").make_current()
+    # Вернуть управление игроку
+    player_ref.set_process_input(true)
+    player_ref.get_node("Camera").make_current()
+    player_ref.global_transform = exit_position.global_transform
     
-    # Сбрасываем состояние
-    current_driver = null
-    is_player_controlling = false
+    # Отключить управление машиной
+    set_process_input(false)
+    Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+    is_player_inside = false
+    player_ref = null
     
-    # Отключаем все камеры машины
-    for camera in [first_person_camera, third_person_camera, orbit_camera]:
-        camera.clear_current()
+    # Сброс управления
+    engine_force = 0
+    brake = 1.0
+    steering = 0
 
-func _on_interaction_area_body_entered(body):
+func _on_body_entered(body):
     if body.is_in_group("player") and Input.is_action_just_pressed("interact"):
-        if not is_player_controlling:
-            enter_vehicle(body)
-        else:
-            exit_vehicle()
-            body.global_transform = exit_position.global_transform
+        enter_vehicle(body)
+
+func _on_body_exited(body):
+    if body == player_ref:
+        exit_vehicle()
